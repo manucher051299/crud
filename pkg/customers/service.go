@@ -6,17 +6,24 @@ import (
 	"errors"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-var ErrNotFound = errors.New("item not found")
+//ErrNotFound возврашается, когда покупатель не найден
+var ErrNotFound = errors.New("Item not found")
+
+//ErrInternal возвращается, когда произашла внутренняя ошибка
 var ErrInternal = errors.New("internal error")
 
+//Service представляет собой сервис по управлению баннерами
 type Service struct {
-	db *sql.DB
+	pool *pgxpool.Pool
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db}
+//NewService создаёт сервис
+func NewService(pool *pgxpool.Pool) *Service {
+	return &Service{pool: pool}
 }
 
 type Customer struct {
@@ -27,12 +34,17 @@ type Customer struct {
 	Created time.Time `json:"created"`
 }
 
-func (s *Service) ById(ctx context.Context, id int64) (*Customer, error) {
+//Переменная для Id
+//var bannerId int64
+
+//////////////////////
+func (s *Service) ByID(ctx context.Context, ID int64) (*Customer, error) {
+
 	item := &Customer{}
 
-	err := s.db.QueryRowContext(ctx, `
+	err := s.pool.QueryRow(ctx, `
 		SELECT id, name, phone, active, created FROM customers WHERE id=$1
-	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+	`, ID).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -42,22 +54,19 @@ func (s *Service) ById(ctx context.Context, id int64) (*Customer, error) {
 	}
 	return item, nil
 }
+
+/////////////////////////////
 func (s *Service) All(ctx context.Context) ([]*Customer, error) {
+
 	items := make([]*Customer, 0)
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.pool.Query(ctx, `
 		SELECT id, name, phone, active, created FROM customers
 	`)
 	if err != nil {
 		log.Print(err)
 		return nil, ErrInternal
 	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			log.Print(cerr)
-			return
-		}
-	}()
 	for rows.Next() {
 		item := &Customer{}
 		err = rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
@@ -75,21 +84,16 @@ func (s *Service) All(ctx context.Context) ([]*Customer, error) {
 }
 
 func (s *Service) AllActive(ctx context.Context) ([]*Customer, error) {
+
 	items := make([]*Customer, 0)
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.pool.Query(ctx, `
 		SELECT id, name, phone, active, created FROM customers WHERE active
 	`)
 	if err != nil {
 		log.Print(err)
 		return nil, ErrInternal
 	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			log.Print(cerr)
-			return
-		}
-	}()
 	for rows.Next() {
 		item := &Customer{}
 		err = rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
@@ -105,60 +109,83 @@ func (s *Service) AllActive(ctx context.Context) ([]*Customer, error) {
 	}
 	return items, nil
 }
-func (s *Service) Save(ctx context.Context, name string, phone string, id int64) error {
-	if id == 0 {
-		_, err := s.db.ExecContext(ctx, `
-		INSERT INTO customers(name,phone) VALUES ($1,$2) ON CONFLICT(phone) DO UPDATE SET name=excluded.name;
-		`, name, phone)
+
+func (s *Service) Save(ctx context.Context, customer *Customer) (*Customer, error) {
+
+	item := &Customer{
+		ID:    customer.ID,
+		Name:  customer.Name,
+		Phone: customer.Phone,
+	}
+
+	if item.ID == 0 {
+		err := s.pool.QueryRow(ctx, `
+	INSERT INTO customers(name,phone) VALUES ($1,$2) ON CONFLICT(phone) DO UPDATE SET name=excluded.name RETURNING id,name,phone,active,created;
+	`, item.Name, item.Phone).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
 		if err != nil {
 			log.Print(err)
-			return ErrInternal
+			return nil, ErrInternal
 		}
-		return nil
+		return item, nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `
-	UPDATE customers SET name=$1 phone=$2;
-	`, name, phone)
+	err := s.pool.QueryRow(ctx, `
+UPDATE customers SET name=$1 phone=$2 RETURNING id,name,phone,active,created;
+`, item.Name, item.Phone).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
 	if err != nil {
 		log.Print(err)
-		return ErrInternal
+		return nil, ErrInternal
 	}
-	return nil
+	return item, nil
 }
 
-func (s *Service) RemoveById(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `
-	DELETE FROM customers WHERE id=$1;
-	`, id)
+/////////////////////////
+func (s *Service) RemoveByID(ctx context.Context, id int64) (*Customer, error) {
+	item := &Customer{}
+	err := s.pool.QueryRow(ctx, `
+	DELETE FROM customers WHERE id=$1 RETURNING id,name,phone,active,created;
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
 		log.Print(err)
-		return ErrInternal
+		return nil, ErrInternal
 	}
-	return nil
+	return item, nil
 }
 
-func (s *Service) BlockById(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `
-	UPDATE customers SET active=0 WHERE id=$1;
-	`, id)
-	if err != nil {
-		log.Print(err)
-		return ErrInternal
+func (s *Service) BlockById(ctx context.Context, id int64) (*Customer, error) {
+
+	item := &Customer{}
+
+	err := s.pool.QueryRow(ctx, `
+UPDATE customers SET active=false WHERE id = $1 RETURNING id,name,phone,active,created	
+`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	return nil
+
+	if err != nil {
+		return nil, ErrInternal
+	}
+	return item, nil
 }
 
-func (s *Service) UnblockById(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `
-	UPDATE customers SET active=1 WHERE id=$1;
-	`, id)
-	if err != nil {
-		log.Print(err)
-		return ErrInternal
+func (s *Service) UnblockById(ctx context.Context, id int64) (*Customer, error) {
+	item := &Customer{}
+
+	err := s.pool.QueryRow(ctx, `
+	UPDATE customers SET active=true WHERE id = $1 RETURNING id,name,phone,active,created
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	return nil
+
+	if err != nil {
+		return nil, ErrInternal
+	}
+	return item, nil
 }
