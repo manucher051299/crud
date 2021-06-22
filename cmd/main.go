@@ -10,9 +10,9 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v4/pgxpool"
-	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/manucher051299/crud/cmd/app"
 	"github.com/manucher051299/crud/pkg/customers"
+	"github.com/manucher051299/crud/pkg/security"
 	"go.uber.org/dig"
 )
 
@@ -38,6 +38,7 @@ func execute(host string, port string, dsn string) (err error) {
 			return pgxpool.Connect(ctx, dsn)
 		},
 		customers.NewService,
+		security.NewService,
 		func(server *app.Server) *http.Server {
 			return &http.Server{
 				Addr:    net.JoinHostPort(host, port),
